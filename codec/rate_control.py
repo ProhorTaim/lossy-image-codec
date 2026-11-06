@@ -66,11 +66,11 @@ def encode(png_bytes: bytes, max_bytes: int) -> bytes:
     """Подобрать параметры под max_bytes и вернуть байты PIC1.
 
     Порядок проб:
-      1. YCbCr 4:2:0, downscale=1
-      2. YCbCr 4:2:0, downscale=2
-      3. YCbCr 4:2:0, downscale=4
-      4. RGB (без chroma subsampling), downscale=1 — для крошечных/графических
-         картинок где YCbCr избыточен.
+      1. RGB (без chroma subsampling), downscale=1 — лучшее качество,
+         используется когда влезает в лимит.
+      2. YCbCr 4:2:0, downscale=1 — хорошее сжатие с потерями на цвете.
+      3. YCbCr 4:2:0, downscale=2 — больше сжатия, даунскейл 2×.
+      4. YCbCr 4:2:0, downscale=4 —maximum сжатие, даунскейл 4×.
 
     Бросает BadInput при max_bytes <= 0.
     Бросает CannotFit если ни один вариант не влез.
@@ -79,10 +79,10 @@ def encode(png_bytes: bytes, max_bytes: int) -> bytes:
         raise BadInput("max_bytes must be positive")
 
     candidates = [
+        (MODE_RGB, 1),
         (MODE_YCBCR_420, 1),
         (MODE_YCBCR_420, 2),
         (MODE_YCBCR_420, 4),
-        (MODE_RGB, 1),
     ]
 
     for mode, downscale_ratio in candidates:
