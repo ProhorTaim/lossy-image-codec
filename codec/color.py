@@ -63,8 +63,12 @@ def chroma_upsample_420(cb_small: np.ndarray, cr_small: np.ndarray,
     """Cb, Cr (h//2, w//2) -> Cb, Cr (h, w) nearest-neighbor 2×2.
 
     Используется для восстановления полноразмерного chroma после 4:2:0.
-    Обрезает до h×w на случай нечетных размеров.
+    При нечётных h/w досаджует крайние значения, чтобы размеры совпали.
     """
-    cb = np.repeat(np.repeat(cb_small, 2, axis=0), 2, axis=1)[:h, :w]
-    cr = np.repeat(np.repeat(cr_small, 2, axis=0), 2, axis=1)[:h, :w]
-    return cb, cr
+    cb = np.repeat(np.repeat(cb_small, 2, axis=0), 2, axis=1)
+    cr = np.repeat(np.repeat(cr_small, 2, axis=0), 2, axis=1)
+    # Падинг для нечётных размеров: досадить последнюю строку/столбец
+    if cb.shape[0] < h or cb.shape[1] < w:
+        cb = np.pad(cb, ((0, h - cb.shape[0]), (0, w - cb.shape[1])), mode='edge')
+        cr = np.pad(cr, ((0, h - cr.shape[0]), (0, w - cr.shape[1])), mode='edge')
+    return cb[:h, :w], cr[:h, :w]
