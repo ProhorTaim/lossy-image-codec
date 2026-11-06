@@ -1,0 +1,15 @@
+# docker-compose.yml — один сервис api на порту 8000 (заглушка).
+#
+# TODO: добавить сборку образа, переменные окружения, healthcheck.
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - BASE_URL=
+      - TEAM_TOKEN=
+    # TODO: healthcheck на GET /v1/health

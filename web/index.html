@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lossy Image Codec</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>Lossy Image Codec</h1>
+
+  <form id="upload-form">
+    <label>
+      Изображение (PNG):
+      <input type="file" id="image-input" accept="image/png" required>
+    </label>
+    <label>
+      max_bytes (байт):
+      <input type="number" id="max-bytes" min="1" value="8192" required>
+    </label>
+    <button type="submit">Сжать</button>
+  </form>
+
+  <div id="result" class="hidden">
+    <div class="image-pair">
+      <div>
+        <img id="original-img" alt="Оригинал">
+        <p>Оригинал</p>
+      </div>
+      <div>
+        <img id="reconstructed-img" alt="Восстановленное">
+        <p>Восстановленное</p>
+      </div>
+    </div>
+
+    <div class="slider">
+      <label>Сравнение:</label>
+      <input type="range" id="compare-slider" min="0" max="100" value="50">
+    </div>
+
+    <pre id="info"></pre>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
