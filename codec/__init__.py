@@ -10,6 +10,8 @@ API-слой не знает про внутренности кодека. Ко�
 """
 
 from .errors import BadInput, CannotFit, CorruptFormat
+from .decoder import decode as _decoder_decode
+from .encoder import encode as _encoder_encode
 
 __all__ = ["encode", "decode", "BadInput", "CannotFit", "CorruptFormat"]
 
@@ -20,7 +22,7 @@ def encode(png_bytes: bytes, max_bytes: int) -> bytes:
     Гарантии: len(result) <= max_bytes, иначе CannotFit.
     Бросает BadInput на невалидный PNG или max_bytes <= 0.
     """
-    raise NotImplementedError("encoder not implemented yet")
+    return _encoder_encode(png_bytes, max_bytes)
 
 
 def decode(fmt_bytes: bytes) -> bytes:
@@ -29,4 +31,4 @@ def decode(fmt_bytes: bytes) -> bytes:
     Гарантии: W×H совпадают с оригиналом. Stateless.
     Бросает CorruptFormat на битые данные.
     """
-    raise NotImplementedError("decoder not implemented yet")
+    return _decoder_decode(fmt_bytes)
