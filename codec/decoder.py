@@ -22,8 +22,8 @@ from PIL import Image
 
 from . import color as _color
 from .errors import CorruptFormat
-from .format import (HEADER_SIZE, MODE_RGB, MODE_YCBCR_420, _rle_decode,
-                     parse_header)
+from .format import (FLAG_HAS_ALPHA, HEADER_SIZE, MODE_RGB, MODE_YCBCR_420,
+                     _rle_decode, parse_header)
 
 # ---------------------------------------------------------------------------
 # DCT-II матрица 8×8 (ортогнональная, IDCT = M.T @ coeffs @ M)
@@ -144,6 +144,15 @@ def _save_png_rgb(arr_uint8: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+def _save_png_rgba(rgb_uint8: np.ndarray, alpha_uint8: np.ndarray) -> bytes:
+    """RGB uint8 (H, W, 3) + альфа (H, W) -> PNG байты RGBA (8 бит)."""
+    rgba = np.dstack([rgb_uint8, alpha_uint8])
+    img = Image.fromarray(rgba, "RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Точка входа decode
 # ---------------------------------------------------------------------------
@@ -163,6 +172,8 @@ def decode(fmt_bytes: bytes) -> bytes:
     mode = header["mode"]
     downscale_ratio = header["downscale_ratio"]
     q_scale = header["q_scale"]
+    flags = header["flags"]
+    has_alpha = bool(flags & FLAG_HAS_ALPHA)
 
     payload = fmt_bytes[HEADER_SIZE:]
 
@@ -170,19 +181,23 @@ def decode(fmt_bytes: bytes) -> bytes:
     proc_h = max(1, height // downscale_ratio)
 
     if mode == MODE_RGB:
-        # Три компонента: R, G, B на proc_h × proc_w
+        # Три или четыре компонента: R, G, B [, A] на proc_h × proc_w
         offset = 0
         channels = []
         hb = (proc_h + 7) // 8
         wb = (proc_w + 7) // 8
         num_blocks = hb * wb
-        for _ in range(3):
+        n_components = 4 if has_alpha else 3
+        for _ in range(n_components):
             comp_data, offset = _read_component(payload, offset)
             channel = _decode_component(comp_data, num_blocks, _LUM_QUANT,
                                         q_scale, proc_h, proc_w)
             channels.append(channel)
-        rgb = np.stack(channels, axis=-1)
+        rgb = np.stack(channels[:3], axis=-1)
         rgb = np.clip(np.round(rgb), 0, 255).astype(np.uint8)
+        alpha = None
+        if has_alpha:
+            alpha = np.clip(np.round(channels[3]), 0, 255).astype(np.uint8)
 
     else:  # MODE_YCBCR_420
         offset = 0
@@ -210,6 +225,17 @@ def decode(fmt_bytes: bytes) -> bytes:
         cr = _decode_component(comp_data, num_blocks_cb, _CHROM_QUANT, q_scale,
                                cb_h, cb_w)
 
+        # Альфа компонента (если есть) — полное разрешение, матрица яркости
+        alpha = None
+        if has_alpha:
+            comp_data, offset = _read_component(payload, offset)
+            hb = (proc_h + 7) // 8
+            wb = (proc_w + 7) // 8
+            num_blocks_a = hb * wb
+            alpha = _decode_component(comp_data, num_blocks_a, _LUM_QUANT, q_scale,
+                                      proc_h, proc_w)
+            alpha = np.clip(np.round(alpha), 0, 255).astype(np.uint8)
+
         # Upsample chroma до полного разрешения
         cb_full, cr_full = _color.chroma_upsample_420(cb, cr, proc_h, proc_w)
 
@@ -222,5 +248,11 @@ def decode(fmt_bytes: bytes) -> bytes:
         img = Image.fromarray(rgb, "RGB")
         img = img.resize((width, height), Image.Resampling.BILINEAR)
         rgb = np.array(img)
+        if alpha is not None:
+            img_a = Image.fromarray(alpha, "L")
+            img_a = img_a.resize((width, height), Image.Resampling.BILINEAR)
+            alpha = np.array(img_a)
 
+    if has_alpha and alpha is not None:
+        return _save_png_rgba(rgb, alpha)
     return _save_png_rgb(rgb)

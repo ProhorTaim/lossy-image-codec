@@ -1,14 +1,15 @@
 """Энкодер: PNG -> байты собственного формата PIC1.
 
 Пайплайн:
-  1. Читаем PNG через Pillow (RGBA -> композит на белом, 16 бит -> 8, grayscale -> RGB).
-  2. При besoin downscale (бинейно) до proc_w × proc_h.
+  1. Читаем PNG через Pillow (RGBA -> 분리 RGB+A, 16 бит -> 8, grayscale -> RGB).
+     Альфа-канал НЕ composites на белый фон — сохраняется как отдельный 4-й компонент.
+  2. При besoin downscale (бинейно) до proc_w × proc_h (и альфа тоже downscalится).
   3. RGB -> YCbCr (или RGB напрямую в режиме mode=0).
   4. Chroma subsampling 4:2:0 (усреднение 2×2).
   5. Блоки 8×8, DCT-II (ортогнональная матрица).
   6. Квантование стандартными JPEG-матрицами × q_scale.
   7. Зигзаг + RLE + zlib.
-  8. Заголовок PIC1 + сжатые данные.
+  8. Заголовок PIC1 + сжатые данные (4-й компонент — альфа, если есть).
 """
 
 import io
@@ -20,7 +21,7 @@ from PIL import Image
 
 from . import color as _color
 from .errors import BadInput
-from .format import (HEADER_SIZE, MODE_RGB, MODE_YCBCR_420,
+from .format import (FLAG_HAS_ALPHA, HEADER_SIZE, MODE_RGB, MODE_YCBCR_420,
                      _rle_encode, serialize_header)
 
 # ---------------------------------------------------------------------------
@@ -92,11 +93,12 @@ _ZIGZAG_COLS = (_ZIGZAG % 8).ravel()
 # PNG I/O (вход только, Pillow — вспомогательное средство)
 # ---------------------------------------------------------------------------
 
-def _load_png_rgb(png_bytes: bytes) -> tuple[np.ndarray, tuple[int, int]]:
+def _load_png_rgba(png_bytes: bytes) -> tuple[np.ndarray, np.ndarray | None, tuple[int, int]]:
     """Читаем PNG из байтов.
 
-    Возвращаем (H, W, 3) uint8 массив и (W, H) исходный размер.
-    RGBA composited на белом, 16 бит -> 8, grayscale/palette -> RGB.
+    Возвращаем (H, W, 3) uint8 массив RGB, (H, W) uint8 массив альфа-канала или None,
+    и (W, H) исходный размер.
+    RGBA не composited на белый фон — альфа сохраняется отдельно.
     Бросает BadInput на невалидный PNG.
     """
     buf = io.BytesIO(png_bytes)
@@ -107,39 +109,48 @@ def _load_png_rgb(png_bytes: bytes) -> tuple[np.ndarray, tuple[int, int]]:
         raise BadInput(f"invalid PNG: {exc}") from exc
 
     mode = img.mode
+    alpha: np.ndarray | None = None
+
     if mode == "RGBA":
-        bg = Image.new("RGB", img.size, (255, 255, 255))
-        bg.paste(img, mask=img.split()[3])
-        img = bg
+        rgba = np.array(img)  # (H, W, 4) uint8
+        arr = rgba[..., :3].copy()
+        alpha = rgba[..., 3].copy()
     elif mode == "LA":
-        bg = Image.new("L", img.size, 255)
-        bg.paste(img, mask=img.split()[1])
-        img = bg.convert("RGB")
+        la = np.array(img)  # (H, W, 2) uint8
+        arr = np.stack([la[..., 0], la[..., 0], la[..., 0]], axis=-1)
+        alpha = la[..., 1].copy()
     elif mode == "P":
-        img = img.convert("RGBA")
-        bg = Image.new("RGB", img.size, (255, 255, 255))
-        bg.paste(img, mask=img.split()[3])
-        img = bg
+        rgba = img.convert("RGBA")
+        rgba_arr = np.array(rgba)  # (H, W, 4) uint8
+        arr = rgba_arr[..., :3].copy()
+        alpha = rgba_arr[..., 3].copy()
     elif mode == "L":
-        img = img.convert("RGB")
+        arr = np.array(img).astype(np.uint8)
+        arr = np.stack([arr, arr, arr], axis=-1)
     elif mode in ("I;16", "I;16B", "I;16L"):
-        img = img.convert("RGB")
+        arr = np.array(img.convert("RGB"))
     elif mode == "RGB":
-        pass
+        arr = np.array(img)
     else:
-        img = img.convert("RGB")
+        arr = np.array(img.convert("RGB"))
 
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
 
-    arr = np.array(img)  # (H, W, 3) uint8
     size = img.size  # (W, H)
-    return arr, size
+    return arr, alpha, size
 
 
-def _save_png_rgb(arr_uint8: np.ndarray) -> bytes:
-    """RGB uint8 (H, W, 3) -> PNG байты (8 бит)."""
-    img = Image.fromarray(arr_uint8, "RGB")
+def _save_png_rgba(rgb_uint8: np.ndarray, alpha_uint8: np.ndarray | None) -> bytes:
+    """RGB uint8 (H, W, 3) + опциональная альфа (H, W) -> PNG байты (8 бит).
+
+    Если alpha is None — сохраняем как RGB, иначе как RGBA.
+    """
+    if alpha_uint8 is not None:
+        rgba = np.dstack([rgb_uint8, alpha_uint8])
+        img = Image.fromarray(rgba, "RGBA")
+    else:
+        img = Image.fromarray(rgb_uint8, "RGB")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -247,6 +258,18 @@ def encode_image_ycbcr(arr: np.ndarray, q_scale: int) -> list[bytes]:
                               [_LUM_QUANT, _CHROM_QUANT, _CHROM_QUANT], q_scale)
 
 
+def encode_image_rgba(arr: np.ndarray, alpha: np.ndarray, q_scale: int) -> list[bytes]:
+    """RGB (H, W, 3) + альфа (H, W) -> список сжатых компонентов [R, G, B, A], mode=RGB с флагом has_alpha.
+
+    Альфа-канал сжимается как 4-й компонент с матрицей яркости (LUM_QUANT).
+    RGB-каналы кодируются напрямую (без YCbCr преобразования), чтобы сохранить
+    цвета в прозрачных областях.
+    """
+    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+    return _encode_components([r, g, b, alpha],
+                              [_LUM_QUANT, _LUM_QUANT, _LUM_QUANT, _LUM_QUANT], q_scale)
+
+
 # ---------------------------------------------------------------------------
 # Сборка полного формата (без rate control)
 # ---------------------------------------------------------------------------
@@ -267,9 +290,8 @@ def _encode_full(png_bytes: bytes, q_scale: int, downscale_ratio: int,
     Возвращает готовые байты формата (заголовок + payload).
     width/height в заголовке — исходные размеры до downscale.
     """
-    from .format import MODE_YCBCR_420 as _MODE_YCBCR  # noqa: F811
-
-    arr, (orig_w, orig_h) = _load_png_rgb(png_bytes)
+    arr, alpha, (orig_w, orig_h) = _load_png_rgba(png_bytes)
+    has_alpha = alpha is not None
 
     proc_w, proc_h = orig_w, orig_h
     if downscale_ratio > 1:
@@ -278,20 +300,30 @@ def _encode_full(png_bytes: bytes, q_scale: int, downscale_ratio: int,
         img = Image.fromarray(arr, "RGB")
         img = img.resize((proc_w, proc_h), Image.Resampling.BILINEAR)
         arr = np.array(img)
+        if alpha is not None:
+            img_a = Image.fromarray(alpha, "L")
+            img_a = img_a.resize((proc_w, proc_h), Image.Resampling.BILINEAR)
+            alpha = np.array(img_a)
 
     # Для крошечных картинок (меньше 2×2) YCbCr 4:2.0 не имеет смысла —
     # используем RGB напрямую.
     if mode == MODE_YCBCR_420 and (proc_h < 2 or proc_w < 2):
         mode = MODE_RGB
 
-    if mode == MODE_RGB:
+    if has_alpha:
+        # RGB + альфа: всегда кодируем как 4 компонента (R, G, B, A)
+        components = encode_image_rgba(arr, alpha, q_scale)
+        effective_mode = MODE_RGB
+    elif mode == MODE_RGB:
         components = encode_image_rgb(arr, q_scale)
+        effective_mode = MODE_RGB
     else:
         components = encode_image_ycbcr(arr, q_scale)
+        effective_mode = MODE_YCBCR_420
 
-    payload = _pack_payload(mode, components)
-    flags = 1 if downscale_ratio > 1 else 0
-    header = serialize_header(orig_w, orig_h, mode, downscale_ratio,
+    payload = _pack_payload(effective_mode, components)
+    flags = (1 if downscale_ratio > 1 else 0) | (FLAG_HAS_ALPHA if has_alpha else 0)
+    header = serialize_header(orig_w, orig_h, effective_mode, downscale_ratio,
                               q_scale, flags)
     return header + payload
 

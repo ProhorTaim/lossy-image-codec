@@ -3,16 +3,17 @@
 Схема заголовка (big-endian, всего 18 байт):
   offset 0  : magic        4 байта  b'PIC1'
   offset 4  : version      uint8    = 1
-  offset 5  : flags        uint8    бит 0 — был downscale, остальное 0
+  offset 5  : flags        uint8    бит 0 — был downscale, бит 1 — есть альфа-канал
   offset 6  : width        uint32   исходная ширина W
   offset 10 : height       uint32   исходная высота H
   offset 14 : mode         uint8    0 = RGB напрямую, 1 = YCbCr 4:2:0
   offset 15 : downscale_ratio uint8 1 = без downscale, 2 = /2, 4 = /4
   offset 16 : q_scale      uint16   использованный масштаб квантования
-  offset 18 : payload      残り     zlib(RLE(zigzag(quantized DCT-коэффициенты)))
+  offset 18 : payload     残り     zlib(RLE(zigzag(quantized DCT-коэффициенты)))
 
 Формат самодостаточен: decoder восстанавливает W×H, mode, downscale_ratio,
-q_scale только из этих байт.
+q_scale только из этих байт. При установленном бите has_alpha в payload
+ Präsents 4-й компонент (альфа-канал) после цветовых компонентов.
 """
 
 import struct
@@ -24,6 +25,9 @@ HEADER_SIZE = 18
 
 MODE_RGB = 0
 MODE_YCBCR_420 = 1
+
+FLAG_DOWNSCALE = 1   # бит 0: был downscale
+FLAG_HAS_ALPHA = 2   # бит 1: в изображении есть альфа-канал
 
 _HEADER_STRUCT = struct.Struct(">4sBBIIBBH")
 
